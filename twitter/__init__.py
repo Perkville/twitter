@@ -10,7 +10,7 @@ from textwrap import dedent
 
 from .api import Twitter, TwitterError, TwitterHTTPError, TwitterResponse
 from .auth import NoAuth, UserPassAuth
-from .oauth import (OAuth, read_token_file, write_token_file,
+from .oauth import (OAuth, OAuth2, read_token_file, write_token_file,
                     __doc__ as oauth_doc)
 from .stream import TwitterStream
 from .oauth_dance import oauth_dance
@@ -54,5 +54,5 @@ Working with OAuth
 __doc__ += dedent(oauth_doc)
 
 __all__ = ["Twitter", "TwitterStream", "TwitterResponse", "TwitterError",
-           "TwitterHTTPError", "NoAuth", "OAuth", "UserPassAuth",
+           "TwitterHTTPError", "NoAuth", "OAuth", "OAuth2", "UserPassAuth",
            "read_token_file", "write_token_file", "oauth_dance"]
