@@ -75,25 +75,6 @@ def read_token_file(filename):
     return f.readline().strip(), f.readline().strip()
 
 
-class OAuth2(Auth):
-    def __init__(self, consumer_key, consumer_secret):
-        import requests
-
-        response = requests.post(url='https://api.twitter.com/oauth2/token',
-                                 data={'grant_type': 'client_credentials'},
-                                 headers={'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
-                                 auth=(consumer_key, consumer_secret)).json()
-
-        self.bearer_token = response['access_token']
-
-    def encode_params(self, base_url, method, params):
-        enc_params = urlencode_noplus(sorted(params.items()))
-        return enc_params
-
-    def generate_headers(self):
-        return {'Authorization': 'Bearer {0}'.format(self.bearer_token)}
-
-
 class OAuth(Auth):
     """
     An OAuth authenticator.
@@ -140,14 +121,18 @@ class OAuth(Auth):
 # %20 rather than '+' when constructing an OAuth signature (and therefore
 # also in the request itself.)
 # So here is a specialized version which does exactly that.
+# In Python2, since there is no safe option for urlencode, we force it by hand
 def urlencode_noplus(query):
     if not PY3:
         new_query = []
+        TILDE = '____TILDE-PYTHON-TWITTER____'
         for k,v in query:
             if type(k) is unicode: k = k.encode('utf-8')
+            k = str(k).replace("~", TILDE)
             if type(v) is unicode: v = v.encode('utf-8')
+            v = str(v).replace("~", TILDE)
             new_query.append((k, v))
         query = new_query
-        return urlencode(query).replace("+", "%20")
+        return urlencode(query).replace(TILDE, "~").replace("+", "%20")
 
     return urlencode(query, safe='~').replace("+", "%20")

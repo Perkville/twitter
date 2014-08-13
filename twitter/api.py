@@ -1,3 +1,6 @@
+# encoding: utf-8
+from __future__ import unicode_literals
+
 try:
     import urllib.request as urllib_request
     import urllib.error as urllib_error
@@ -21,11 +24,15 @@ try:
 except ImportError:
     import httplib as http_client
 
-import json
+try:
+    import json
+except ImportError:
+    import simplejson as json
 
 
 class _DEFAULT(object):
     pass
+
 
 class TwitterError(Exception):
     """
@@ -33,6 +40,7 @@ class TwitterError(Exception):
     general error interacting with the API.
     """
     pass
+
 
 class TwitterHTTPError(TwitterError):
     """
@@ -56,14 +64,16 @@ class TwitterHTTPError(TwitterError):
             self.response_data = f.read()
         else:
             self.response_data = data
+        super(TwitterHTTPError, self).__init__(str(self))
 
     def __str__(self):
         fmt = ("." + self.format) if self.format else ""
         return (
             "Twitter sent status %i for URL: %s%s using parameters: "
-            "(%s)\ndetails: %s" %(
+            "(%s)\ndetails: %s" % (
                 self.e.code, self.uri, fmt, self.uriparts,
                 self.response_data))
+
 
 class TwitterResponse(object):
     """
@@ -75,8 +85,6 @@ class TwitterResponse(object):
     httplib.HTTPHeaders instance. You can do
     `response.headers.get('h')` to retrieve a header.
     """
-    def __init__(self, headers):
-        self.headers = headers
 
     @property
     def rate_limit_remaining(self):
@@ -100,32 +108,32 @@ class TwitterResponse(object):
         return int(self.headers.get('X-Rate-Limit-Reset', "0"))
 
 
+class TwitterDictResponse(dict, TwitterResponse):
+    pass
+
+
+class TwitterListResponse(list, TwitterResponse):
+    pass
+
+
 def wrap_response(response, headers):
     response_typ = type(response)
-    if response_typ is bool:
-        # HURF DURF MY NAME IS PYTHON AND I CAN'T SUBCLASS bool.
-        response_typ = int
-    elif response_typ is str:
-        return response
-
-    class WrappedTwitterResponse(response_typ, TwitterResponse):
-        __doc__ = TwitterResponse.__doc__
-
-        def __init__(self, response, headers):
-            response_typ.__init__(self, response)
-            TwitterResponse.__init__(self, headers)
-        def __new__(cls, response, headers):
-            return response_typ.__new__(cls, response)
-
-    return WrappedTwitterResponse(response, headers)
-
+    if response_typ is dict:
+        res = TwitterDictResponse(response)
+        res.headers = headers
+    elif response_typ is list:
+        res = TwitterListResponse(response)
+        res.headers = headers
+    else:
+        res = response
+    return res
 
 
 class TwitterCall(object):
 
     def __init__(
-        self, auth, format, domain, callable_cls, uri="",
-        uriparts=None, secure=True):
+            self, auth, format, domain, callable_cls, uri="",
+            uriparts=None, secure=True, timeout=None, gzip=False):
         self.auth = auth
         self.format = format
         self.domain = domain
@@ -133,6 +141,8 @@ class TwitterCall(object):
         self.uri = uri
         self.uriparts = uriparts
         self.secure = secure
+        self.timeout = timeout
+        self.gzip = gzip
 
     def __getattr__(self, k):
         try:
@@ -141,9 +151,9 @@ class TwitterCall(object):
             def extend_call(arg):
                 return self.callable_cls(
                     auth=self.auth, format=self.format, domain=self.domain,
-                    callable_cls=self.callable_cls, uriparts=self.uriparts \
-                        + (arg,),
-                    secure=self.secure)
+                    callable_cls=self.callable_cls, timeout=self.timeout,
+                    secure=self.secure, gzip=self.gzip,
+                    uriparts=self.uriparts + (arg,))
             if k == "_":
                 return extend_call
             else:
@@ -170,7 +180,7 @@ class TwitterCall(object):
         # the list of uriparts, assume the id goes at the end.
         id = kwargs.pop('id', None)
         if id:
-            uri += "/%s" %(id)
+            uri += "/%s" % (id)
 
         # If an _id kwarg is present, this is treated as id as a CGI
         # param.
@@ -187,18 +197,49 @@ class TwitterCall(object):
         dot = ""
         if self.format:
             dot = "."
-        uriBase = "http%s://%s/%s%s%s" %(
-                    secure_str, self.domain, uri, dot, self.format)
+        uriBase = "http%s://%s/%s%s%s" % (
+            secure_str, self.domain, uri, dot, self.format)
 
-        headers = {'Accept-Encoding': 'gzip'}
+        # Catch media arguments to handle oauth query differently for multipart
+        media = None
+        for arg in ['media[]', 'banner', 'image']:
+            if arg in kwargs:
+                media = kwargs.pop(arg)
+                mediafield = arg
+                break
+
+        headers = {'Accept-Encoding': 'gzip'} if self.gzip else dict()
+        body = None
+        arg_data = None
         if self.auth:
             headers.update(self.auth.generate_headers())
-            arg_data = self.auth.encode_params(uriBase, method, kwargs)
-            if method == 'GET':
+            # Use urlencoded oauth args with no params when sending media
+            # via multipart and send it directly via uri even for post
+            arg_data = self.auth.encode_params(
+                uriBase, method, {} if media else kwargs)
+            if method == 'GET' or media:
                 uriBase += '?' + arg_data
-                body = None
             else:
                 body = arg_data.encode('utf8')
+
+        # Handle query as multipart when sending media
+        if media:
+            BOUNDARY = "###Python-Twitter###"
+            bod = []
+            bod.append('--' + BOUNDARY)
+            bod.append(
+                'Content-Disposition: form-data; name="%s"' % mediafield)
+            bod.append('')
+            bod.append(media)
+            for k, v in kwargs.items():
+                bod.append('--' + BOUNDARY)
+                bod.append('Content-Disposition: form-data; name="%s"' % k)
+                bod.append('')
+                bod.append(v)
+            bod.append('--' + BOUNDARY + '--')
+            body = '\r\n'.join(bod)
+            headers['Content-Type'] = \
+                'multipart/form-data; boundary=%s' % BOUNDARY
 
         req = urllib_request.Request(uriBase, body, headers)
         return self._handle_response(req, uri, arg_data, _timeout)
@@ -234,6 +275,7 @@ class TwitterCall(object):
             else:
                 raise TwitterHTTPError(e, uri, self.format, arg_data)
 
+
 class Twitter(TwitterCall):
     """
     The minimalist yet fully featured Twitter API class.
@@ -254,11 +296,8 @@ class Twitter(TwitterCall):
         # Get your "home" timeline
         t.statuses.home_timeline()
 
-        # Get a particular friend's timeline
-        t.statuses.friends_timeline(id="billybob")
-
-        # Also supported (but totally weird)
-        t.statuses.friends_timeline.billybob()
+        # Get a particular friend's tweets
+        t.statuses.user_timeline(user_id="billybob")
 
         # Update your status
         t.statuses.update(
@@ -319,9 +358,9 @@ class Twitter(TwitterCall):
 
     """
     def __init__(
-        self, format="json",
-        domain="api.twitter.com", secure=True, auth=None,
-        api_version=_DEFAULT):
+            self, format="json",
+            domain="api.twitter.com", secure=True, auth=None,
+            api_version=_DEFAULT):
         """
         Create a new twitter API connector.
 
@@ -334,20 +373,19 @@ class Twitter(TwitterCall):
 
 
         `domain` lets you change the domain you are connecting. By
-        default it's `api.twitter.com` but `search.twitter.com` may be
-        useful too.
+        default it's `api.twitter.com`.
 
         If `secure` is False you will connect with HTTP instead of
         HTTPS.
 
         `api_version` is used to set the base uri. By default it's
-        '1'. If you are using "search.twitter.com" set this to None.
+        '1.1'.
         """
         if not auth:
             auth = NoAuth()
 
         if (format not in ("json", "xml", "")):
-            raise ValueError("Unknown data format '%s'" %(format))
+            raise ValueError("Unknown data format '%s'" % (format))
 
         if api_version is _DEFAULT:
             api_version = '1.1'
